@@ -1,5 +1,4 @@
 import time
-
 import onnx
 from onnx import helper, shape_inference
 import onnxruntime as rt
@@ -53,80 +52,98 @@ def merge_onnx_models(model1_path, model2_path, merged_model_path):
     # print(f"合并后的模型已保存到: {merged_model_path}")
 
 
-def infer_onnx_model(model_path, input_data):
+def infer_onnx_model(model_path, input_data, warmup=True, runs=10):
     """
-    使用 ONNX Runtime 对模型进行推理。
-    :param model_path: ONNX 模型路径
-    :param input_data: 输入数据
-    :return: 模型输出
+    使用 ONNX Runtime 对模型进行推理，并优化时间测量
     """
-    # 加载模型
+    # 加载模型并记录加载时间
+    start_load = time.time()
     session = rt.InferenceSession(model_path)
+    end_load = time.time()
+    load_time = end_load - start_load
 
     # 获取模型的输入和输出名称
     input_name = session.get_inputs()[0].name
     output_name = session.get_outputs()[0].name
 
-    # 执行推理
-    result = session.run([output_name], {input_name: input_data})
-    return result[0]
+    # 预热模型
+    if warmup:
+        result = session.run([output_name], {input_name: input_data})
 
+    # 多次推理测量
+    durations = []
+    for _ in range(runs):
+        start = time.time()
+        session.run([output_name], {input_name: input_data})
+        end = time.time()
+        durations.append(end - start)
+        # print(end - start)
+    average_time = sum(durations)/len(durations)
+    return load_time,average_time,result[0]
 def inference(model,input_data):
-    starttime = time.time()
-    model_output = infer_onnx_model(model, input_data)
-    endtime = time.time()
-    print("Duration time :" ,endtime-starttime,"  s")
+
+    load_time,average_time,result = infer_onnx_model(model, input_data)
+
+    print(f"加载时间: {load_time:.8f}s, 平均推理时间: {average_time:.8f}s")
+    print(f"总时间（加载+推理）: { average_time + load_time:.8f}s\n")
     # print(model_output)
 def inference_split(model1,model2,input_data):
-    starttime = time.time()
-    model_output = infer_onnx_model(model1, input_data)
-    model_output = infer_onnx_model(model2, model_output)
-    endtime = time.time()
-    print("Duration time :" ,endtime-starttime,"  s")
-    # print(model_output)
+    load_time1, average_time1, result = infer_onnx_model(model1, input_data)
+    load_time2, average_time2, result = infer_onnx_model(model2, result)
+
+    print(f"加载时间: {load_time1+load_time2:.8f}s, 平均推理时间: {average_time1+average_time2:.8f}s")
+    print(f"总时间（加载+推理）: {load_time1+load_time2+ average_time1+average_time2:.8f}s\n")
 def inference_merge(trimmed_layer1_model,trimmed_layer2_model,input_data):
     merged_model = "merged_model.onnx"
     starttime = time.time()
     # 合并模型
     merge_onnx_models(trimmed_layer1_model, trimmed_layer2_model, merged_model)
     endtime = time.time()
-    print("merge time :", endtime - starttime, "  s")
-    model_output = infer_onnx_model(merged_model, input_data)
-    endtime2 = time.time()
-    print("inference time :" ,endtime2-endtime,"  s")
-    print("total time :", endtime2 - starttime, "  s")
+    print("merge time :", endtime - starttime, " s")
+    load_time, average_time, result = infer_onnx_model(merged_model, input_data)
+
+    print(f"加载时间: {load_time:.8f}s, 平均推理时间: {average_time:.8f}s")
+    print(f"总时间（merge+加载+推理）: { endtime - starttime + average_time+load_time:.8f}s")
+
     # print(model_output)
 def main():
-    # 定义裁剪后的模型路径
+    # 模型路径
     trimmed_layer1_model = "trimmed_hidden_layer_1.onnx"
     trimmed_layer2_model = "trimmed_hidden_layer_2.onnx"
     initial_model = "simple_cnn.onnx"
     # 定义合并后的模型路径
 
 
+    # 创建随机输入数据
+    input_data = np.random.randn(1, 1, 3, 3).astype(np.float32)
+    print("完整模型一次性推理")
+    inference(initial_model, input_data)
+    print()
     # # 合并模型
     # merge_onnx_models(trimmed_layer1_model, trimmed_layer2_model, merged_model)
 
-    # 创建随机输入数据
-    input_data = np.random.randn(1, 1, 3, 3).astype(np.float32)
+
 
     # 合并后推理
     print("模型分割合并后一次性推理")
     inference_merge(trimmed_layer1_model, trimmed_layer2_model, input_data)
+
+
+    print()
+    # 完整模型整块推理
+    print("完整模型一次性推理")
+    inference(initial_model, input_data)
 
     # 串行推理
 
     print("模型分割后串行推理")
     inference_split(trimmed_layer1_model,trimmed_layer2_model,input_data)
 
+    print()
 
 
 
 
-    # 完整模型整块推理
-    print("完整模型一次性推理")
-
-    inference(initial_model, input_data)
 
 
 if __name__ == "__main__":
